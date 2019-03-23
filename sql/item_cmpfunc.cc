@@ -5228,27 +5228,13 @@ bool Item_cond::excl_dep_on_table(table_map tab_map)
 
 bool Item_cond::excl_dep_on_grouping_fields(st_select_lex *sel)
 {
-  List_iterator_fast<Item> li(list);
-  Item *item;
-  while ((item= li++))
-  {
-    if (!item->excl_dep_on_grouping_fields(sel))
-      return false;
-  }
-  return true;
-}
-
-
-bool
-Item_cond::excl_dep_on_group_fields_for_having_pushdown(st_select_lex *sel)
-{
   if (has_rand_bit())
     return false;
   List_iterator_fast<Item> li(list);
   Item *item;
   while ((item= li++))
   {
-    if (!item->excl_dep_on_group_fields_for_having_pushdown(sel))
+    if (!item->excl_dep_on_grouping_fields(sel))
       return false;
   }
   return true;
@@ -7359,14 +7345,14 @@ Item_bool_rowready_func2* Le_creator::create_swap(THD *thd, Item *a, Item *b) co
 
 
 bool
-Item_equal::excl_dep_on_group_fields_for_having_pushdown(st_select_lex *sel)
+Item_equal::excl_dep_on_grouping_fields(st_select_lex *sel)
 {
   Item_equal_fields_iterator it(*this);
   Item *item;
 
   while ((item=it++))
   {
-    if (item->excl_dep_on_group_fields_for_having_pushdown(sel))
+    if (item->excl_dep_on_grouping_fields(sel))
     {
       set_extraction_flag(FULL_EXTRACTION_FL);
       return true;
@@ -7378,31 +7364,56 @@ Item_equal::excl_dep_on_group_fields_for_having_pushdown(st_select_lex *sel)
 
 /**
   @brief
-    Create from this multiple equality equalities that can be pushed down
+    Transform multiple equality into the list of equalities
 
   @param thd         the thread handle
-  @param equalities  the result list of created equalities
+  @param equalities  the list where created equalities are stored
   @param checker     the checker callback function to be applied to the nodes
-                     of the tree of the object
+                     of the tree of the object to check if multiple equality
+                     elements can be used to create equalities
   @param arg         parameter to be passed to the checker
 
   @details
-    The method traverses this multiple equality trying to create from it
-    new equalities that can be pushed down. It creates equalities with
-    the constant used in this multiple equality if it exists or the first
-    item for which checker returns non-NULL result and all other items
-    in this multiple equality for which checker returns non-NULL result.
+    How the method works on example:
 
-    Example:
+    It takes MULT_EQ(1,a,b) and tries to create from its elements a set of
+    equalities {(1=a),(1=b)}.
 
-    MULT_EQ(1,a,b)
-    =>
-    Created equalities: {(1=a),(1=b)}
+    How it is made:
 
-    MULT_EQ(a,b,c,d)
-    =>
-    Created equalities: {(a=b),(a=c),(a=d)}
+    1. The method tries to find the left part of future equalities. It will
+       be the same for all future equalities. It is either:
+       a. A constant if there is any
+       b. A first element in the multiple equality which was satisfied by
+          checker function
 
+       For the example above the left element is constant '1'.
+    
+    2. If the left element is found the rest elements of the multiple equality
+       are checked with the checker function if they can be right parts
+       of equalities.
+       If the element can be a right part of the equality, equality is built.
+       It is built with the left part element found in the step 1 and
+       the right part element found in this step (step 2).
+
+       Suppose for the example above that both 'a' and 'b' fields can be used
+       to build equalities:
+
+       for 'a' field (1=a) is built
+       for 'b' field (1=b) is built
+
+    3. As a result we get a set of equalities built with the elements of
+       this multiple equality. They are saved in the equalities list.
+
+       {(1=a),(1=b)}
+
+  @note
+    This method is called for condition pushdown into materialized
+    derived table/view/IN subquery and pushdown from HAVING into WHERE.
+    When it is called for pushdown from HAVING empty checker is passed.
+    It happens because elements of this multiple equality don't need to be
+    checked if they can be used to build equalities. There are no elements
+    that can't be used to build equalities.
 
   @retval true   if an error occurs
   @retval false  otherwise
@@ -7416,14 +7427,14 @@ bool Item_equal::create_pushable_equalities(THD *thd,
   Item *item;
   Item_equal_fields_iterator it(*this);
   Item *left_item = get_const();
-  Item *right_item;
   if (!left_item)
   {
     while ((item=it++))
     {
-      left_item= ((item->*checker) (arg)) ? item : NULL;
-      if (left_item)
-        break;
+      left_item= item;
+      if (checker && !((item->*checker) (arg)))
+        continue;
+      break;
     }
   }
   if (!left_item)
@@ -7431,8 +7442,7 @@ bool Item_equal::create_pushable_equalities(THD *thd,
 
   while ((item=it++))
   {
-    right_item= ((item->*checker) (arg)) ? item : NULL;
-    if (!right_item)
+    if (checker && !((item->*checker) (arg)))
       continue;
     Item_func_eq *eq= 0;
     Item *left_item_clone= left_item->build_clone(thd);
@@ -7449,4 +7459,37 @@ bool Item_equal::create_pushable_equalities(THD *thd,
       return true;
   }
   return false;
+}
+
+
+/**
+  Transform multiple equality into the AND condition of equalities.
+
+  MULT_EQ(1,a,b)
+  =>
+  (a = 1) AND (b = 1)
+
+  Equalities are built in Item_equal::create_pushable_equalities() method
+  using elements of this multiple equality. The result of this method is
+  saved in equalities list.
+  This method returns AND condition built with equalities list.
+*/
+
+Item *Item_equal::multiple_equality_transformer(THD *thd, uchar *arg)
+{
+  List<Item> equalities;
+  if (create_pushable_equalities(thd, &equalities, 0, 0))
+    return 0;
+
+  switch (equalities.elements)
+  {
+  case 0:
+    return 0;
+  case 1:
+    return equalities.head();
+    break;
+  default:
+    return new (thd->mem_root) Item_cond_and(thd, equalities);
+    break;
+  }
 }

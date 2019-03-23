@@ -229,7 +229,7 @@ Item *and_new_conditions_to_optimized_cond(THD *thd, Item *cond,
                                            COND_EQUAL **cond_eq,
                                            List<Item> &new_conds,
                                            Item::cond_result *cond_value,
-                                           bool build_cond_equal);
+                                           bool having_pushdown);
 
 #include "sql_explain.h"
 
