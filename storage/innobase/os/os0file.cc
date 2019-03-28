@@ -5149,7 +5149,10 @@ short_warning:
 @param fh	file handle
 @param created	whether the file is being created
 @return true if the file system supports sparse files */
-static bool os_is_sparse_file_supported(os_file_t fh, bool created = true)
+#ifdef _WIN32
+static
+#endif
+bool os_is_sparse_file_supported(os_file_t fh, bool created = true)
 {
 	/* In this debugging mode, we act as if punch hole is supported,
 	then we skip any calls to actually punch a hole.  In this way,
@@ -7500,12 +7503,8 @@ void fil_node_t::find_metadata(os_file_t file)
 		ut_ad(is_open());
 	}
 
-	if (space->punch_hole
-#ifndef _WIN32
-	    && !is_open() /* FIXME: Remove this on POSIX! */
-#endif
-	    ) {
-		space->punch_hole = os_is_sparse_file_supported(file, true);
+	if (space->punch_hole) {
+		space->punch_hole = os_is_sparse_file_supported(file);
 	}
 
 	/*

@@ -2829,6 +2829,11 @@ fil_rename_tablespace(
 	return(success);
 }
 
+#ifndef _WIN32
+/* FIXME: remove this! */
+bool os_is_sparse_file_supported(os_file_t fh, bool created);
+#endif
+
 /** Create a tablespace file.
 @param[in]	space_id	Tablespace ID
 @param[in]	name		Tablespace name in dbname/tablename format.
@@ -2904,6 +2909,7 @@ fil_ibd_create(
 	}
 
 	const bool is_compressed = FSP_FLAGS_HAS_PAGE_COMPRESSION(flags);
+	bool punch_hole = is_compressed;
 
 #ifdef _WIN32
 	if (is_compressed) {
@@ -2920,6 +2926,10 @@ err_exit:
 		os_file_delete(innodb_data_file_key, path);
 		return NULL;
 	}
+
+#ifndef _WIN32 // FIXME: remove this
+	punch_hole = punch_hole && os_is_sparse_file_supported(file, true);
+#endif
 
 	/* We have to write the space id to the file immediately and flush the
 	file to disk. This is because in crash recovery we must be aware what
@@ -3005,7 +3015,7 @@ err_exit:
 		free(crypt_data);
 		*err = DB_ERROR;
 	} else {
-		space->punch_hole = is_compressed;
+		space->punch_hole = punch_hole;
 		/* FIXME: Keep the file open! */
 		fil_node_t* node = space->add(path, OS_FILE_CLOSED, size,
 					      false, true);
