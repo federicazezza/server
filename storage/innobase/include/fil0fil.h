@@ -234,7 +234,10 @@ struct fil_space_t {
 	/** Note that the tablespace has been imported.
 	Initially, purpose=FIL_TYPE_IMPORT so that no redo log is
 	written while the space ID is being updated in each page. */
-	void set_imported();
+	inline void set_imported();
+
+	/** @return whether the storage device is rotational (HDD, not SSD) */
+	inline bool is_rotational() const;
 
 	/** Open each file. Only invoked on fil_system.temp_space.
 	@return whether all files were opened */
@@ -537,6 +540,8 @@ struct fil_node_t {
 	pfs_os_file_t	handle;
 	/** whether the file actually is a raw device or disk partition */
 	bool		is_raw_disk;
+	/** whether the file is on non-rotational media (SSD) */
+	bool		on_ssd;
 	/** size of the file in database pages (0 if not known yet);
 	the possible last incomplete megabyte may be ignored
 	if space->id == 0 */
@@ -579,12 +584,34 @@ struct fil_node_t {
 	@return	whether the page was found valid */
 	bool read_page0(bool first);
 
+	/** Determine some file metadata when creating or reading the file.
+	@param	file	the file that is being created, or OS_FILE_CLOSED */
+	void find_metadata(os_file_t file = OS_FILE_CLOSED);
+
 	/** Close the file handle. */
 	void close();
 };
 
 /** Value of fil_node_t::magic_n */
 #define	FIL_NODE_MAGIC_N	89389
+
+inline void fil_space_t::set_imported()
+{
+	ut_ad(purpose == FIL_TYPE_IMPORT);
+	purpose = FIL_TYPE_TABLESPACE;
+	UT_LIST_GET_FIRST(chain)->find_metadata();
+}
+
+inline bool fil_space_t::is_rotational() const
+{
+	for (const fil_node_t* node = UT_LIST_GET_FIRST(chain);
+	     node != NULL; node = UT_LIST_GET_NEXT(chain, node)) {
+		if (!node->on_ssd) {
+			return true;
+		}
+	}
+	return false;
+}
 
 /** Common InnoDB file extentions */
 enum ib_extention {
