@@ -7508,14 +7508,29 @@ void fil_node_t::find_metadata(os_file_t file)
 		space->punch_hole = os_is_sparse_file_supported(file, true);
 	}
 
+	/*
+	For the temporary tablespace and during the
+	non-redo-logged adjustments in
+	IMPORT TABLESPACE, we do not care about
+	the atomicity of writes.
+
+	Atomic writes is supported if the file can be used
+	with atomic_writes (not log file), O_DIRECT is
+	used (tested in ha_innodb.cc) and the file is
+	device and file system that supports atomic writes
+	for the given block size.
+	*/
+	space->atomic_write_supported = space->purpose == FIL_TYPE_TEMPORARY
+		|| space->purpose == FIL_TYPE_IMPORT;
 #ifdef _WIN32
-	BOOL result = false;
+	block_size = 512;
+	on_ssd = false;
 	// Open volume for this file, find out it "physical bytes per sector"
 	char volume[MAX_PATH + 4];
 	if (!GetVolumePathName(name, volume + 4, MAX_PATH)) {
 		os_file_handle_error_no_exit(name,
 			"GetVolumePathName()", FALSE);
-		goto end;
+		return;
 	}
 	// Special prefix required for volume names.
 	memcpy(volume, "\\\\.\\", 4);
@@ -7530,70 +7545,65 @@ void fil_node_t::find_metadata(os_file_t file)
 		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		0, OPEN_EXISTING, 0, 0);
 
-	if (volume_handle == INVALID_HANDLE_VALUE) {
+	if (volume_handle != INVALID_HANDLE_VALUE) {
+		DWORD tmp;
+		union {
+			STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR disk_alignment;
+			DEVICE_SEEK_PENALTY_DESCRIPTOR seek_penalty;
+		} result;
+		STORAGE_PROPERTY_QUERY storage_query;
+		memset(&storage_query, 0, sizeof(storage_query));
+		storage_query.PropertyId = StorageAccessAlignmentProperty;
+		storage_query.QueryType  = PropertyStandardQuery;
+
+		if (!os_win32_device_io_control(volume_handle,
+						IOCTL_STORAGE_QUERY_PROPERTY,
+						&storage_query,
+						sizeof storage_query,
+						&result.disk_alignment,
+						sizeof result.disk_alignment,
+						&tmp)
+		    || tmp < sizeof result.disk_alignment) {
+ioctl_fail:
+			switch (GetLastError()) {
+			case ERROR_INVALID_FUNCTION:
+			case ERROR_NOT_SUPPORTED:
+				break;
+			default:
+				os_file_handle_error_no_exit(
+					volume,
+					"DeviceIoControl(IOCTL_STORAGE_QUERY_PROPERTY)",
+					FALSE);
+			}
+			goto end;
+		}
+
+		block_size = result.disk_alignment.BytesPerPhysicalSector;
+
+		storage_query.PropertyId = StorageDeviceSeekPenaltyProperty;
+		storage_query.QueryType  = PropertyStandardQuery;
+
+		if (!os_win32_device_io_control(volume_handle,
+						IOCTL_STORAGE_QUERY_PROPERTY,
+						&storage_query,
+						sizeof storage_query,
+						&result.seek_penalty,
+						sizeof result.seek_penalty,
+						&tmp)
+		    || tmp < sizeof result.seek_penalty) {
+			goto ioctl_fail;
+		}
+
+		on_ssd = !result.seek_penalty.IncursSeekPenalty;
+end:
+		if (volume_handle != INVALID_HANDLE_VALUE) {
+			CloseHandle(volume_handle);
+		}
+	} else {
 		if (GetLastError() != ERROR_ACCESS_DENIED) {
 			os_file_handle_error_no_exit(volume,
 				"CreateFile()", FALSE);
 		}
-		goto end;
-	}
-
-	block_size = 0;
-	on_ssd = false;
-
-	DWORD tmp;
-	union {
-		STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR disk_alignment;
-		DEVICE_SEEK_PENALTY_DESCRIPTOR seek_penalty;
-	} result;
-	STORAGE_PROPERTY_QUERY storage_query;
-	memset(&storage_query, 0, sizeof(storage_query));
-	storage_query.PropertyId = StorageAccessAlignmentProperty;
-	storage_query.QueryType  = PropertyStandardQuery;
-
-	if (!os_win32_device_io_control(volume_handle,
-					IOCTL_STORAGE_QUERY_PROPERTY,
-					&storage_query,
-					sizeof storage_query,
-					&result.disk_alignment,
-					sizeof result.disk_alignment,
-					&tmp)
-	    || tmp < sizeof result.disk_alignment) {
-ioctl_fail:
-		switch (GetLastError()) {
-		case ERROR_INVALID_FUNCTION:
-		case ERROR_NOT_SUPPORTED:
-			break;
-		default:
-			os_file_handle_error_no_exit(
-				volume,
-				"DeviceIoControl(IOCTL_STORAGE_QUERY_PROPERTY)",
-				FALSE);
-		}
-		goto end;
-	}
-
-	block_size = result.disk_alignment.BytesPerPhysicalSector;
-
-	storage_query.PropertyId = StorageDeviceSeekPenaltyProperty;
-	storage_query.QueryType  = PropertyStandardQuery;
-
-	DEVICE_SEEK_PENALTY_DESCRIPTOR seek_penalty;
-	if (!os_win32_device_io_control(volume_handle,
-					IOCTL_STORAGE_QUERY_PROPERTY,
-					&storage_query,
-					sizeof storage_query,
-					&result.disk_alignment,
-					sizeof result.disk_alignment,
-					&tmp)
-	    || tmp < sizeof result.disk_alignment) {
-		goto ioctl_fail;
-	}
-
-	on_ssd = !result.disk_alignment.IncursSeekPenalty;
-end:
-	if (volume_handle != INVALID_HANDLE_VALUE) {
-		CloseHandle(volume_handle);
 	}
 
 	/* Currently we support file block size up to 4KiB */
@@ -7602,31 +7612,18 @@ end:
 	} else if (block_size < 512) {
 		block_size = 512;
 	}
-
-	space->atomic_write_supported
-		= space->purpose == FIL_TYPE_TEMPORARY
-		|| space->purpose == FIL_TYPE_IMPORT
-		|| srv_page_size == block_size;
-#else
-	/*
-	For the temporary tablespace and during the
-	non-redo-logged adjustments in
-	IMPORT TABLESPACE, we do not care about
-	the atomicity of writes.
-
-	Atomic writes is supported if the file can be used
-	with atomic_writes (not log file), O_DIRECT is
-	used (tested in ha_innodb.cc) and the file is
-	device and file system that supports atomic writes
-	for the given block size.
-	*/
-	space->atomic_write_supported
-		= space->purpose == FIL_TYPE_TEMPORARY
-		|| space->purpose == FIL_TYPE_IMPORT
-		|| (atomic_write
-		    && srv_use_atomic_writes
-		    && my_test_if_atomic_write(file, space->physical_size()));
 #endif
+	if (!space->atomic_write_supported) {
+		space->atomic_write_supported = atomic_write
+			&& srv_use_atomic_writes
+#ifdef _WIN32
+			&& my_test_if_atomic_write(file,
+						   space->physical_size())
+#else
+			&& srv_page_size == block_size
+#endif
+			;
+	}
 }
 
 /** Read the first page of a data file.
