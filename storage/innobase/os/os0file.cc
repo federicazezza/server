@@ -7559,12 +7559,12 @@ void fil_node_t::find_metadata(os_file_t file)
 						sizeof result.disk_alignment,
 						&tmp)
 		    || tmp < sizeof result.disk_alignment) {
-ioctl_fail:
 			switch (GetLastError()) {
 			case ERROR_INVALID_FUNCTION:
 			case ERROR_NOT_SUPPORTED:
 				break;
 			default:
+			ioctl_fail:
 				os_file_handle_error_no_exit(
 					volume,
 					"DeviceIoControl(IOCTL_STORAGE_QUERY_PROPERTY)",
@@ -7586,7 +7586,14 @@ ioctl_fail:
 						sizeof result.seek_penalty,
 						&tmp)
 		    || tmp < sizeof result.seek_penalty) {
-			goto ioctl_fail;
+			switch (GetLastError()) {
+			case ERROR_INVALID_FUNCTION:
+			case ERROR_NOT_SUPPORTED:
+			case ERROR_GEN_FAILURE:
+				goto end;
+			default:
+				goto ioctl_fail;
+			}
 		}
 
 		on_ssd = !result.seek_penalty.IncursSeekPenalty;
@@ -7715,7 +7722,10 @@ invalid:
 		find_metadata();
 #ifndef _WIN32
 		on_ssd = space->atomic_write_supported
-			|| fil_system.is_ssd(statbuf.st_dev);
+# ifdef UNIV_LINUX
+			|| fil_system.is_ssd(statbuf.st_dev)
+# endif
+			;
 #endif
 
 		/* Truncate the size to a multiple of extent size. */
