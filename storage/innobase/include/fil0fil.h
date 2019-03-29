@@ -33,6 +33,9 @@ Created 10/25/1995 Heikki Tuuri
 
 #include "log0recv.h"
 #include "dict0types.h"
+#ifdef UNIV_LINUX
+# include <set>
+#endif
 
 // Forward declaration
 extern my_bool srv_use_doublewrite_buf;
@@ -880,6 +883,22 @@ struct fil_system_t {
 
 private:
   bool m_initialised;
+#ifdef UNIV_LINUX
+  /** available block devices that reside on non-rotational storage */
+  std::vector<dev_t> ssd;
+public:
+  /** @return whether a file system device is on non-rotational storage */
+  bool is_ssd(dev_t dev) const
+  {
+    /* Linux seems to allow up to 15 partitions per block device.
+    If the detected ssd carries "partition number 0" (it is the whole device),
+    compare the candidate file system number without the partition number. */
+    for (const auto s : ssd)
+      if (dev == s || (dev & ~15U) == s)
+        return true;
+    return false;
+  }
+#endif
 public:
 	ib_mutex_t	mutex;		/*!< The mutex protecting the cache */
 	fil_space_t*	sys_space;	/*!< The innodb_system tablespace */

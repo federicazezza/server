@@ -51,7 +51,9 @@ Created 10/25/1995 Heikki Tuuri
 #include "buf0flu.h"
 #include "os0api.h"
 #ifdef UNIV_LINUX
-# include <sys/statfs.h>
+# include <sys/types.h>
+# include <sys/sysmacros.h>
+# include <dirent.h>
 #endif
 
 /** Tries to close a file in the LRU list. The caller must hold the fil_sys
@@ -1567,6 +1569,66 @@ void fil_system_t::create(ulint hash_size)
 	spaces = hash_create(hash_size);
 
 	fil_space_crypt_init();
+#ifdef UNIV_LINUX
+	ssd.clear();
+	char fn[sizeof(dirent::d_name)
+		+ sizeof "/sys/block/" "/queue/rotational"];
+	const size_t sizeof_fnp = (sizeof fn) - sizeof "/sys/block";
+	memcpy(fn, "/sys/block/", sizeof "/sys/block");
+	char* fnp = &fn[sizeof "/sys/block"];
+
+	std::set<std::string> ssd_devices;
+	if (DIR* d = opendir("/sys/block")) {
+		while (struct dirent* e = readdir(d)) {
+			if (e->d_name[0] == '.') {
+				continue;
+			}
+			snprintf(fnp, sizeof_fnp, "%s/queue/rotational",
+				 e->d_name);
+			int f = open(fn, O_RDONLY);
+			if (f == -1) {
+				continue;
+			}
+			char b[sizeof "4294967295:4294967295\n"];
+			ssize_t l = read(f, b, sizeof b);
+			::close(f);
+			if (l != 2 || memcmp("0\n", b, 2)) {
+				continue;
+			}
+			snprintf(fnp, sizeof_fnp, "%s/dev", e->d_name);
+			f = open(fn, O_RDONLY);
+			if (f == -1) {
+				continue;
+			}
+			l = read(f, b, sizeof b);
+			::close(f);
+			if (l <= 0 || b[l - 1] != '\n') {
+				continue;
+			}
+			b[l - 1] = '\0';
+			char* end = b;
+			unsigned long dev_major = strtoul(b, &end, 10);
+			if (b == end || *end != ':'
+			    || dev_major != unsigned(dev_major)) {
+				continue;
+			}
+			char* c = end + 1;
+			unsigned long dev_minor = strtoul(c, &end, 10);
+			if (c == end || *end
+			    || dev_minor != unsigned(dev_minor)) {
+				continue;
+			}
+			ssd.push_back(makedev(unsigned(dev_major),
+					      unsigned(dev_minor)));
+		}
+		closedir(d);
+	}
+	/* fil_system_t::is_ssd() assumes the following */
+	ut_ad(makedev(0, 8) == 8);
+	ut_ad(makedev(0, 4) == 4);
+	ut_ad(makedev(0, 2) == 2);
+	ut_ad(makedev(0, 1) == 1);
+#endif
 }
 
 void fil_system_t::close()

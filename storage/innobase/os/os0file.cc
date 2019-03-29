@@ -38,8 +38,8 @@ Created 10/21/1995 Heikki Tuuri
 #include "sql_const.h"
 
 #ifdef UNIV_LINUX
-#include <sys/types.h>
-#include <sys/stat.h>
+# include <sys/types.h>
+# include <sys/stat.h>
 #endif
 
 #include "srv0srv.h"
@@ -7714,7 +7714,8 @@ invalid:
 	if (first) {
 		find_metadata();
 #ifndef _WIN32
-		on_ssd = space->atomic_write_supported /* || FIXME */;
+		on_ssd = space->atomic_write_supported
+			|| fil_system.is_ssd(statbuf.st_dev);
 #endif
 
 		/* Truncate the size to a multiple of extent size. */
