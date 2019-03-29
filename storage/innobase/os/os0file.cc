@@ -5147,12 +5147,8 @@ short_warning:
 
 /** Check if the file system supports sparse files.
 @param fh	file handle
-@param created	whether the file is being created
 @return true if the file system supports sparse files */
-#ifdef _WIN32
-static
-#endif
-bool os_is_sparse_file_supported(os_file_t fh, bool created = true)
+IF_WIN(static,) bool os_is_sparse_file_supported(os_file_t fh)
 {
 	/* In this debugging mode, we act as if punch hole is supported,
 	then we skip any calls to actually punch a hole.  In this way,
@@ -5171,11 +5167,9 @@ bool os_is_sparse_file_supported(os_file_t fh, bool created = true)
 	}
 	return false;
 #else
-	/* FIXME: remove the parameter 'created' */
 	/* We don't know the FS block size, use the sector size. The FS
 	will do the magic. */
-	return created && DB_SUCCESS
-		== os_file_punch_hole_posix(fh, 0, srv_page_size);
+	return DB_SUCCESS == os_file_punch_hole_posix(fh, 0, srv_page_size);
 #endif /* _WIN32 */
 }
 
@@ -7503,9 +7497,11 @@ void fil_node_t::find_metadata(os_file_t file)
 		ut_ad(is_open());
 	}
 
+#ifdef _WIN32 /* FIXME: make this unconditional */
 	if (space->punch_hole) {
 		space->punch_hole = os_is_sparse_file_supported(file);
 	}
+#endif
 
 	/*
 	For the temporary tablespace and during the

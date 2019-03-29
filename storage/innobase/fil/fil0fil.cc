@@ -2829,10 +2829,8 @@ fil_rename_tablespace(
 	return(success);
 }
 
-#ifndef _WIN32
 /* FIXME: remove this! */
-bool os_is_sparse_file_supported(os_file_t fh, bool created);
-#endif
+IF_WIN(, bool os_is_sparse_file_supported(os_file_t fh));
 
 /** Create a tablespace file.
 @param[in]	space_id	Tablespace ID
@@ -2927,9 +2925,8 @@ err_exit:
 		return NULL;
 	}
 
-#ifndef _WIN32 // FIXME: remove this
-	punch_hole = punch_hole && os_is_sparse_file_supported(file, true);
-#endif
+	/* FIXME: remove this */
+	IF_WIN(, punch_hole = punch_hole && os_is_sparse_file_supported(file));
 
 	/* We have to write the space id to the file immediately and flush the
 	file to disk. This is because in crash recovery we must be aware what
