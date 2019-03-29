@@ -855,8 +855,8 @@ static trx_rseg_t* trx_assign_rseg_low()
 }
 
 /** Set the innodb_log_optimize_ddl page flush observer
-@param[in]	space_id	tablespace id
-@param[in,out]	stage		performance_schema accounting */
+@param[in,out]	space	tablespace
+@param[in,out]	stage	performance_schema accounting */
 void trx_t::set_flush_observer(fil_space_t* space, ut_stage_alter_t* stage)
 {
 	flush_observer = UT_NEW_NOKEY(FlushObserver(space, this, stage));
